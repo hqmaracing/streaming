@@ -24,6 +24,10 @@ def _to_int(value):
         return None
 
 
+def _is_numeric_value(value):
+    return str(value or "").strip().isdigit()
+
+
 def _parse_csv_line(line):
     """Parse a single incoming stream line that uses CSV-like formatting.
 
@@ -104,7 +108,7 @@ def _new_session_state():
             "started_at": None,
             "leader_laps": None,
         },
-        # drivers keyed by short code/id (may be numeric OR initials).
+        # drivers keyed by numeric short code/id.
         "drivers": {},
         # index by car/slot number to help resolve $G/$H/$J mismatches.
         "driver_index": {},
@@ -301,36 +305,38 @@ def _handle_line(session, line_type, fields, shared_state):
         # Expected: code, car, transponder, first, last, blank, unknown
         code = fields[0] if len(fields) >= 1 else ""
         car = fields[1] if len(fields) >= 2 else code
-        transponder = _to_int(fields[2]) if len(fields) >= 3 else None
-        first = fields[3] if len(fields) >= 4 else ""
-        last = fields[4] if len(fields) >= 5 else ""
-        unknown_tail = fields[5:] if len(fields) > 5 else []
+        if _is_numeric_value(code) and _is_numeric_value(car):
+            transponder = _to_int(fields[2]) if len(fields) >= 3 else None
+            first = fields[3] if len(fields) >= 4 else ""
+            last = fields[4] if len(fields) >= 5 else ""
+            unknown_tail = fields[5:] if len(fields) > 5 else []
 
-        _upsert_driver(
-            session,
-            code=code,
-            car_number=car,
-            first_name=first,
-            last_name=last,
-            transponder=transponder,
-            extra={"from": "$A", "unknown_tail": unknown_tail},
-        )
+            _upsert_driver(
+                session,
+                code=code,
+                car_number=car,
+                first_name=first,
+                last_name=last,
+                transponder=transponder,
+                extra={"from": "$A", "unknown_tail": unknown_tail},
+            )
 
     elif line_type == "$COMP":
         # Similar to $A; use it to enrich/repair driver fields.
         code = fields[0] if len(fields) >= 1 else ""
         car = fields[1] if len(fields) >= 2 else code
-        first = fields[3] if len(fields) >= 4 else ""
-        last = fields[4] if len(fields) >= 5 else ""
+        if _is_numeric_value(code) and _is_numeric_value(car):
+            first = fields[3] if len(fields) >= 4 else ""
+            last = fields[4] if len(fields) >= 5 else ""
 
-        _upsert_driver(
-            session,
-            code=code,
-            car_number=car,
-            first_name=first,
-            last_name=last,
-            extra={"from": "$COMP", "raw": fields},
-        )
+            _upsert_driver(
+                session,
+                code=code,
+                car_number=car,
+                first_name=first,
+                last_name=last,
+                extra={"from": "$COMP", "raw": fields},
+            )
 
     elif line_type == "$C":
         key = fields[0] if len(fields) >= 1 else ""
@@ -380,34 +386,35 @@ def _handle_line(session, line_type, fields, shared_state):
 
         driver_key = _resolve_driver_key(session, raw_code)
 
-        if driver_key not in session["drivers"]:
+        if driver_key not in session["drivers"] and _is_numeric_value(driver_key):
             _upsert_driver(session, code=driver_key, car_number=driver_key)
 
-        existing_pos = session["positions"].get(driver_key, {})
-        leader_pos = _current_leader_position(session)
-        leader_laps = laps_completed if position == 1 else _current_leader_laps(session)
-        display_gap_seconds = existing_pos.get("display_gap_seconds")
+        if driver_key in session["drivers"]:
+            existing_pos = session["positions"].get(driver_key, {})
+            leader_pos = _current_leader_position(session)
+            leader_laps = laps_completed if position == 1 else _current_leader_laps(session)
+            display_gap_seconds = existing_pos.get("display_gap_seconds")
 
-        if position == 1:
-            display_gap_seconds = 0.0
-        elif (
-            leader_pos is not None
-            and leader_laps is not None
-            and laps_completed == leader_laps
-            and leader_pos.get("elapsed_seconds") is not None
-            and elapsed_seconds is not None
-        ):
-            display_gap_seconds = max(0.0, elapsed_seconds - leader_pos["elapsed_seconds"])
+            if position == 1:
+                display_gap_seconds = 0.0
+            elif (
+                leader_pos is not None
+                and leader_laps is not None
+                and laps_completed == leader_laps
+                and leader_pos.get("elapsed_seconds") is not None
+                and elapsed_seconds is not None
+            ):
+                display_gap_seconds = max(0.0, elapsed_seconds - leader_pos["elapsed_seconds"])
 
-        session["positions"][driver_key] = {
-            "position": position,
-            "laps_completed": laps_completed,
-            "elapsed": elapsed,
-            "elapsed_seconds": elapsed_seconds,
-            "seen_at_leader_lap": leader_laps,
-            "last_g_at": time.monotonic(),
-            "display_gap_seconds": display_gap_seconds,
-        }
+            session["positions"][driver_key] = {
+                "position": position,
+                "laps_completed": laps_completed,
+                "elapsed": elapsed,
+                "elapsed_seconds": elapsed_seconds,
+                "seen_at_leader_lap": leader_laps,
+                "last_g_at": time.monotonic(),
+                "display_gap_seconds": display_gap_seconds,
+            }
 
     elif line_type == "$H":
         # Expected: Fast Time Position, code, best_lap_number, best_lap_time
